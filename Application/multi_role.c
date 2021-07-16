@@ -69,6 +69,7 @@ Target Device: cc2640r2
 #include "devinfoservice.h"
 #include "simple_gatt_profile.h"
 #include "multi.h"
+#include"ibeaconcfg.h"
 
 #include "board_key.h"
 #include "board.h"
@@ -241,6 +242,7 @@ typedef struct
 
 // Display Interface
 Display_Handle dispHandle = NULL;
+ibeaconinf_config_t ibeaconInf_Config;
 
 /*********************************************************************
 * LOCAL VARIABLES
@@ -639,24 +641,26 @@ static void multi_role_init(void)
     SimpleProfile_AddService(GATT_ALL_SERVICES); // Simple GATT Profile
 
     // Setup Profile Characteristic Values
-    {
-      uint8_t charValue1 = 1;
-      uint8_t charValue2 = 2;
-      uint8_t charValue3 = 3;
-      uint8_t charValue4 = 4;
-      uint8_t charValue5[SIMPLEPROFILE_CHAR5_LEN] = { 1, 2, 3, 4, 5 };
+   {
+    uint8_t charValue1[] = {0x34,0x12};
 
-      SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, sizeof(uint8_t),
-                                 &charValue1);
-      SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint8_t),
-                                 &charValue2);
-      SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, sizeof(uint8_t),
-                                 &charValue3);
-      SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, sizeof(uint8_t),
-                                 &charValue4);
-      SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, SIMPLEPROFILE_CHAR5_LEN,
-                                 charValue5);
-    }
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, sizeof(uint16_t),
+                               charValue1);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, DEFAULT_UUID_LEN,
+                               &ibeaconInf_Config.uuidValue[0]);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, sizeof(uint8_t),
+                               &ibeaconInf_Config.txPower);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, sizeof(uint16_t),
+                               &"ad");
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, sizeof(uint16_t),
+                               &ibeaconInf_Config.majorValue[0]);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, sizeof(uint16_t),
+                               &ibeaconInf_Config.minorValue[0]);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR7, sizeof(uint8_t),
+                               &ibeaconInf_Config.txInterval);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR60, sizeof(uint8_t),
+                               &ibeaconInf_Config.Rxp);
+  }
 
     // Register callback with SimpleGATTprofile
     SimpleProfile_RegisterAppCBs(&multi_role_simpleProfileCBs);
