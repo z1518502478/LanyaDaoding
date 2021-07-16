@@ -1107,7 +1107,7 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
       maxPduSize = pEvent->initDone.dataPktLen;
 
       // Set device info characteristic
-      DevInfo_SetParameter(DEVINFO_SYSTEM_ID, DEVINFO_SYSTEM_ID_LEN, pEvent->initDone.devAddr);
+      DevInfo_SetParameter(DEVINFO_BTADDRESS, DEVINFO_BTADDRESS_LEN, pEvent->initDone.devAddr);
       //mr_doScan(1); 
     }
     break;

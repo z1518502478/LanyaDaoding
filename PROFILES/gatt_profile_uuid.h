@@ -119,15 +119,18 @@ extern "C"
 #define IMEDIATE_TEMP_UUID              0x2A1E  // Intermediate Temperature
 #define MEAS_INTERVAL_UUID              0x2A21  // Measurement Interval
 #define BOOT_KEY_INPUT_UUID             0x2A22  // Boot Keyboard Input Report
-#define SYSTEM_ID_UUID                  0x2A23  // System ID
-#define MODEL_NUMBER_UUID               0x2A24  // Model Number String
+// #define SYSTEM_ID_UUID                  0x2A23  // System ID
+// #define MODEL_NUMBER_UUID               0x2A24  // Model Number String
+#define BTADDRESS_UUID                  0x2A23  // MAC Address
+#define FWRELEASETIME_UUID              0x2A24  // Firmware Revision Release Time
 #define SERIAL_NUMBER_UUID              0x2A25  // Serial Number String
 #define FIRMWARE_REV_UUID               0x2A26  // Firmware Revision String
 #define HARDWARE_REV_UUID               0x2A27  // Hardware Revision String
 #define SOFTWARE_REV_UUID               0x2A28  // Software Revision String
 #define MANUFACTURER_NAME_UUID          0x2A29  // Manufacturer Name String
 #define IEEE_11073_CERT_DATA_UUID       0x2A2A  // IEEE 11073-20601 Regulatory Certification Data List
-#define CURRENT_TIME_UUID               0x2A2B  // Current Time
+//#define CURRENT_TIME_UUID               0x2A2B  // Current Time
+#define MANUFACTUREDATE_UUID            0x2A2B  // Manufacture Date String
 #define SCAN_REFRESH_UUID               0x2A31  // Scan Refresh
 #define BOOT_KEY_OUTPUT_UUID            0x2A32  // Boot Keyboard Output Report
 #define BOOT_MOUSE_INPUT_UUID           0x2A33  // Boot Mouse Input Report
@@ -190,7 +193,7 @@ extern "C"
 #define GATT_UNIT_VOLUME_CUBIC_MTR_UUID       0x2711  // m^3, m^3
 #define GATT_UNIT_VELOCITY_MPS_UUID           0x2712  // m/s, m s^-1
 #define GATT_UNIT_ACCELERATION_MPS_SQ_UUID    0x2713  // m/s^2, m s^-2
-#define GATT_UNIT_WAVENUMBER_RM_UUID          0x2714  // ó, m^-1
+#define GATT_UNIT_WAVENUMBER_RM_UUID          0x2714  // ï¿½, m^-1
 #define GATT_UNIT_DENSITY_KGPCM_UUID          0x2715  // p, kg m^-3
 #define GATT_UNIT_SURFACE_DENSITY_KGPSM_UUID  0x2716  // pA, kg m^-2
 #define GATT_UNIT_SPECIFIC_VOLUME_CMPKG_UUID  0x2717  // v, m^3 kg^-1
