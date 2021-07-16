@@ -90,7 +90,7 @@ Target Device: cc2640r2
 
 // Advertising interval when device is discoverable (units of 625us, 160=100ms)
 #define DEFAULT_ADVERTISING_INTERVAL          160
-
+#define GAP_DEVICE_NAME_L_LEN                 6  
 // Limited discoverable mode advertises for 30.72s, and then stops
 // General discoverable mode advertises indefinitely
 #define DEFAULT_DISCOVERABLE_MODE             GAP_ADTYPE_FLAGS_GENERAL
@@ -105,8 +105,8 @@ Target Device: cc2640r2
 
 // 扫描参数
 #define DEFAULT_SCAN_DURATION                 1000
-#define DEFAULT_SCAN_WIND                     200
-#define DEFAULT_SCAN_INT                      200
+#define DEFAULT_SCAN_WIND                     500
+#define DEFAULT_SCAN_INT                      500
 
 // Discovey mode (limited, general, all)
 #define DEFAULT_DISCOVERY_MODE                DEVDISC_MODE_ALL
@@ -181,7 +181,7 @@ typedef enum {
 
 // How often to perform periodic event (in msec)
 #define MR_PERIODIC_EVT_PERIOD               5000
-#define MR_PERIODIC_EVT_PERIOD1              2000
+#define MR_PERIODIC_EVT_PERIOD1              3000
 
 // Set the register cause to the registration bit-mask
 #define CONNECTION_EVENT_REGISTER_BIT_SET(RegisterCause) (connectionEventRegisterCauseBitMap |= RegisterCause )
@@ -270,44 +270,49 @@ Task_Struct mrTask;
 Char mrTaskStack[MR_TASK_STACK_SIZE];
 
 static uint8_t scanRspData[] =
-{
-  // complete name
-  11,   // length of this data
-  GAP_ADTYPE_LOCAL_NAME_COMPLETE,
-  'M', 'u', 'l', 't', 'i', ' ', 'R', 'o', 'l', 'e',
-
-
-
-  // Tx power level
-  0x02,   // length of this data
-  GAP_ADTYPE_POWER_LEVEL,
-  0       // 0dBm
+    {
+        // complete name
+        0x03,
+        0x03,
+        0xF0, 0xFF,
+        0x07,
+        0x09,
+        'S','H','B','i','k','e',
+        0x09,
+        0x16, 
+        0x06,0x29,
+        0x27,0x11,
+        0x00,0x01,
+        0x68,0x01
 };
 
 // GAP - Advertisement data (max size = 31 bytes, though this is
 // best kept short to conserve power while advertisting)
 static uint8_t advertData[] =
-{
-  // Flags; this sets the device to use limited discoverable
-  // mode (advertises for 30 seconds at a time) instead of general
-  // discoverable mode (advertises indefinitely)
-  0x02,   // length of this data
-  GAP_ADTYPE_FLAGS,
-  DEFAULT_DISCOVERABLE_MODE | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
-
-  // service UUID, to notify central devices what services are included
-  // in this peripheral
-  0x03,   // length of this data
-  GAP_ADTYPE_16BIT_MORE,      // some of the UUID's, but not all
-  LO_UINT16(SIMPLEPROFILE_SERV_UUID),
-  HI_UINT16(SIMPLEPROFILE_SERV_UUID)
-};
+    {
+        // Flags; this sets the device to use limited discoverable
+        // mode (advertises for 30 seconds at a time) instead of general
+        // discoverable mode (advertises indefinitely)
+        0x02, // length of this data
+        0x01,
+        0x24,
+        0x1A, 0xFF,
+        0x4C, 0x00,
+        0x02,
+        0x15,
+        0xFB, 0xB5, 0x06, 0x93, 0xA4, 0xE2, 0x4F, 0xB1,                 //UUID
+        0xAF, 0xCF, 0xC6, 0x20, 0x21, 0x06, 0x29,                       
+        0x00,                                                           //模式
+        0x01,0x00,
+        0x10,0x10,                                                      //编码
+        0xB5
+    };
 
 // pointer to allocate the connection handle map
 static connHandleMapEntry_t *connHandleMap;
 
 // GAP GATT Attributes
-static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = "Multi Role :)";
+static uint8_t attDeviceName[GAP_DEVICE_NAME_L_LEN] = "SHBike";
 
 // 扫描结果个数
 static uint8_t scanRes = 0;
@@ -376,8 +381,6 @@ static void multi_role_sendAttRsp(void);
 static void multi_role_freeAttRsp(uint8_t status);
 static uint16_t multi_role_mapConnHandleToIndex(uint16_t connHandle);
 static uint8_t multi_role_addMappingEntry(uint16_t connHandle, uint8_t *addr);
-static void multi_role_processPasscode(gapPasskeyNeededEvent_t *pData);
-static void multi_role_processPairState(gapPairStateEvent_t* pairingEvent);
 static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
                                   uint8_t uiInputs, uint8_t uiOutputs, uint32_t numComparison);
 static void multi_role_pairStateCB(uint16_t connHandle, uint8_t state,
@@ -408,13 +411,6 @@ static gapRolesCBs_t multi_role_gapRoleCBs =
 static simpleProfileCBs_t multi_role_simpleProfileCBs =
 {
   multi_role_charValueChangeCB // Characteristic value change callback
-};
-
-// GAP Bond Manager Callbacks
-static gapBondCBs_t multi_role_BondMgrCBs =
-{
-  multi_role_passcodeCB, // Passcode callback
-  multi_role_pairStateCB // Pairing state callback
 };
 
 /*********************************************************************
@@ -634,7 +630,7 @@ static void multi_role_init(void)
   // GATT
   {
     // Set the GAP Characteristics
-    GGS_SetParameter(GGS_DEVICE_NAME_ATT, GAP_DEVICE_NAME_LEN, attDeviceName);
+    GGS_SetParameter(GGS_DEVICE_NAME_ATT, GAP_DEVICE_NAME_L_LEN, attDeviceName);
 
     // Initialize GATT Server Services
     GGS_AddService(GATT_ALL_SERVICES);           // GAP
@@ -1006,18 +1002,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
   case MR_CHAR_CHANGE_EVT:
     multi_role_processCharValueChangeEvt(*(pMsg->pData));
-    // Free the app data
-    ICall_free(pMsg->pData);
-    break;
-
-  case MR_PAIRING_STATE_EVT:
-    multi_role_processPairState((gapPairStateEvent_t*)pMsg->pData);
-    // Free the app data
-    ICall_free(pMsg->pData);
-    break;
-
-  case MR_PASSCODE_NEEDED_EVT:
-    multi_role_processPasscode((gapPasskeyNeededEvent_t*)pMsg->pData);
     // Free the app data
     ICall_free(pMsg->pData);
     break;
@@ -1549,76 +1533,6 @@ static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
 }
 
 /*********************************************************************
-* @fn      multi_role_processPairState
-*
-* @brief   处理新的配对状态。
-*
-* @param   pairingEvent - pairing event received from the stack
-*
-* @return  none
-*/
-static void multi_role_processPairState(gapPairStateEvent_t* pairingEvent)
-{
-  uint8_t enableAdv = FALSE;
-
-  // If we've started pairing
-  if (pairingEvent->state == GAPBOND_PAIRING_STATE_STARTED)
-  {
-  }
-  // If pairing is finished
-  else if (pairingEvent->state == GAPBOND_PAIRING_STATE_COMPLETE)
-  {
-    if (pairingEvent->status == SUCCESS)
-    {
-    }
-    else
-    {
-      enableAdv = TRUE;
-    }
-  }
-  // If a bond has happened
-  else if (pairingEvent->state == GAPBOND_PAIRING_STATE_BONDED)
-  {
-    if (pairingEvent->status == SUCCESS)
-    {
-    }
-    enableAdv = TRUE;
-  }
-  // If a bond has been saved
-  else if (pairingEvent->state == GAPBOND_PAIRING_STATE_BOND_SAVED)
-  {
-    if (pairingEvent->status == SUCCESS)
-    {
-    }
-    else
-    {
-    }
-    enableAdv = TRUE;
-  }
-
-  // Reenable advertising
-  if (enableAdv == TRUE)
-  {
-	GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t),&enableAdv, NULL);
-  }
-}
-
-/*********************************************************************
-* @fn      multi_role_processPasscode
-*
-* @brief   处理Passcode请求。
-*
-* @return  none
-*/
-static void multi_role_processPasscode(gapPasskeyNeededEvent_t *pData)
-{
-  // Use static passcode
-  uint32_t passcode = 123456;
-  // Send passcode to GAPBondMgr
-  GAPBondMgr_PasscodeRsp(pData->connectionHandle, SUCCESS, passcode);
-}
-
-/*********************************************************************
  * @fn      multi_role_clockHandler
  *
  * @brief   Handler function for clock timeouts.
@@ -1781,7 +1695,6 @@ bool mr_doScan(uint8_t index)
  // }
   return TRUE;
 }
-
 
 /*********************************************************************
 * @fn      mr_doGattRw
