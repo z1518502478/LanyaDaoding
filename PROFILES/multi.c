@@ -676,7 +676,7 @@ static void gapRole_init(void)
 }
 
 /**
-* @brief   Establish a link to a peer device.
+* @brief   建立与对端设备的连接
 *
 * Public function defined in central.h.
 */
@@ -696,7 +696,7 @@ bStatus_t GAPRole_EstablishLink(uint8_t highDutyCycle, uint8_t whiteList,
 }
 
 /**
-* @brief   Start a device discovery scan.
+* @brief   开始扫描设备
 *
 * Public function defined in central.h.
 */

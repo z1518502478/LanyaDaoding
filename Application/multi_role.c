@@ -73,8 +73,7 @@ Target Device: cc2640r2
 #include "board_key.h"
 #include "board.h"
 
-#include "two_btn_menu.h"
-#include "multi_role_menu.h"
+
 #include "multi_role.h"
 
 /*********************************************************************
@@ -104,25 +103,19 @@ Target Device: cc2640r2
 // Default service discovery timer delay in ms
 #define DEFAULT_SVC_DISCOVERY_DELAY           1000
 
-// Scan parameters
-#define DEFAULT_SCAN_DURATION                 4000
-#define DEFAULT_SCAN_WIND                     80
-#define DEFAULT_SCAN_INT                      80
+// 扫描参数
+#define DEFAULT_SCAN_DURATION                 1000
+#define DEFAULT_SCAN_WIND                     200
+#define DEFAULT_SCAN_INT                      200
 
 // Discovey mode (limited, general, all)
 #define DEFAULT_DISCOVERY_MODE                DEVDISC_MODE_ALL
 
-// TRUE to use active scan
+// TRUE 使用活动扫描
 #define DEFAULT_DISCOVERY_ACTIVE_SCAN         TRUE
 
 // Set desired policy to use during discovery (use values from GAP_Disc_Filter_Policies)
 #define DEFAULT_DISCOVERY_WHITE_LIST          GAP_DISC_FILTER_POLICY_ALL
-
-// TRUE to use high scan duty cycle when creating link
-#define DEFAULT_LINK_HIGH_DUTY_CYCLE          FALSE
-
-// TRUE to use white list when creating link
-#define DEFAULT_LINK_WHITE_LIST               FALSE
 
 // Type of Display to open
 #if !defined(Display_DISABLE_ALL)
@@ -153,6 +146,7 @@ Target Device: cc2640r2
 #define MR_PAIRING_STATE_EVT                 Event_Id_04
 #define MR_PASSCODE_NEEDED_EVT               Event_Id_05
 #define MR_PERIODIC_EVT                      Event_Id_06
+#define MR_PERIODIC_EVT1                     Event_Id_07
 
 #define MR_ALL_EVENTS                        (MR_ICALL_EVT           | \
                                              MR_QUEUE_EVT            | \
@@ -162,6 +156,7 @@ Target Device: cc2640r2
                                              MR_KEY_CHANGE_EVT       | \
                                              MR_PAIRING_STATE_EVT    | \
                                              MR_PERIODIC_EVT         | \
+                                             MR_PERIODIC_EVT1        | \
                                              MR_PASSCODE_NEEDED_EVT)
 
 // Discovery states
@@ -186,6 +181,7 @@ typedef enum {
 
 // How often to perform periodic event (in msec)
 #define MR_PERIODIC_EVT_PERIOD               5000
+#define MR_PERIODIC_EVT_PERIOD1              2000
 
 // Set the register cause to the registration bit-mask
 #define CONNECTION_EVENT_REGISTER_BIT_SET(RegisterCause) (connectionEventRegisterCauseBitMap |= RegisterCause )
@@ -263,6 +259,7 @@ static ICall_SyncHandle syncEvent;
 
 // Clock instances for internal periodic events.
 static Clock_Struct periodicClock;
+static Clock_Struct periodicClock1;
 
 // Queue object used for app messages
 static Queue_Struct appMsg;
@@ -312,7 +309,7 @@ static connHandleMapEntry_t *connHandleMap;
 // GAP GATT Attributes
 static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = "Multi Role :)";
 
-// Number of scan results
+// 扫描结果个数
 static uint8_t scanRes = 0;
 
 // Globals used for ATT Response retransmission
@@ -325,13 +322,13 @@ discInfo_t *discInfo;
 // Maximim PDU size (default = 27 octets)
 static uint16 maxPduSize;
 
-// Scanning started flag
+// 扫描开始的标志
 static bool scanningStarted = FALSE;
 
 // Connecting flag
 static uint8_t connecting = FALSE;
 
-// Scan result list
+// 扫描结果列表
 static mrDevRec_t devList[DEFAULT_MAX_SCAN_RES];
 
 // Value to write
@@ -372,14 +369,12 @@ static void multi_role_charValueChangeCB(uint8_t paramID);
 static uint8_t multi_role_enqueueMsg(uint16_t event, uint8_t *pData);
 static void multi_role_startDiscovery(uint16_t connHandle);
 static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg);
-static void multi_role_handleKeys(uint8_t keys);
 static uint8_t multi_role_eventCB(gapMultiRoleEvent_t *pEvent);
 static void multi_role_paramUpdateDecisionCB(gapUpdateLinkParamReq_t *pReq,
                                              gapUpdateLinkParamReqReply_t *pRsp);
 static void multi_role_sendAttRsp(void);
 static void multi_role_freeAttRsp(uint8_t status);
 static uint16_t multi_role_mapConnHandleToIndex(uint16_t connHandle);
-static void multi_role_keyChangeHandler(uint8_t keysPressed);
 static uint8_t multi_role_addMappingEntry(uint16_t connHandle, uint8_t *addr);
 static void multi_role_processPasscode(gapPasskeyNeededEvent_t *pData);
 static void multi_role_processPairState(gapPairStateEvent_t* pairingEvent);
@@ -388,6 +383,7 @@ static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
 static void multi_role_pairStateCB(uint16_t connHandle, uint8_t state,
                                    uint8_t status);
 static void multi_role_performPeriodicTask(void);
+static void multi_role_performPeriodicTask1(void);
 static void multi_role_clockHandler(UArg arg);
 static void multi_role_connEvtCB(Gap_ConnEventRpt_t *pReport);
 static void multi_role_addDeviceInfo(uint8 *pAddr, uint8 addrType);
@@ -535,65 +531,38 @@ static void multi_role_init(void)
   // so that the application can send and receive messages.
   ICall_registerApp(&selfEntity, &syncEvent);
 
-  // Create an RTOS queue for message from profile to be sent to app.
+  // 建立与RTOS的队列
   appMsgQueue = Util_constructQueue(&appMsg);
 
   // Create one-shot clocks for internal periodic events.
   Util_constructClock(&periodicClock, multi_role_clockHandler,
                       MR_PERIODIC_EVT_PERIOD, 0, false, MR_PERIODIC_EVT);
 
-  // Init keys and LCD
-  Board_initKeys(multi_role_keyChangeHandler);
+  Util_constructClock(&periodicClock1, multi_role_clockHandler,
+                      MR_PERIODIC_EVT_PERIOD1, 1, true, MR_PERIODIC_EVT1);
   // Open Display.
   dispHandle = Display_open(MR_DISPLAY_TYPE, NULL);
 
-  /**************Init Menu*****************************/
-  // Disable all menus except mrMenuScan and mrMenuAdvertise
-  tbm_setItemStatus(&mrMenuMain, TBM_ITEM_0 | TBM_ITEM_5,
-                    TBM_ITEM_1 | TBM_ITEM_2 | TBM_ITEM_3 | TBM_ITEM_4 );
-
-  // Disable all items of submenus
-  tbm_setItemStatus(&mrMenuConnect, TBM_ITEM_NONE, TBM_ITEM_ALL);
-  tbm_setItemStatus(&mrMenuGattRw, TBM_ITEM_NONE, TBM_ITEM_ALL);
-  tbm_setItemStatus(&mrMenuConnUpdate, TBM_ITEM_NONE, TBM_ITEM_ALL);
-  tbm_setItemStatus(&mrMenuDisconnect, TBM_ITEM_NONE, TBM_ITEM_ALL);
-
-  // Init two button menu
-  tbm_initTwoBtnMenu(dispHandle, &mrMenuMain, 1, NULL);
 
   // Setup the GAP
   {
-    // Set advertising interval the same for all scenarios
+    // 将所有场景的发布间隔设置为相同
     uint16_t advInt = DEFAULT_ADVERTISING_INTERVAL;
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MAX, advInt);
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MAX, advInt);
-    GAP_SetParamValue(TGAP_CONN_ADV_INT_MIN, advInt);
-    GAP_SetParamValue(TGAP_CONN_ADV_INT_MAX, advInt);
 
-    // Set scan duration
+    //设置扫描时间
     GAP_SetParamValue(TGAP_GEN_DISC_SCAN, DEFAULT_SCAN_DURATION);
 
-    // Scan interval and window the same for all scenarios
-    GAP_SetParamValue(TGAP_CONN_SCAN_INT, DEFAULT_SCAN_INT);
-    GAP_SetParamValue(TGAP_CONN_SCAN_WIND, DEFAULT_SCAN_WIND);
-    GAP_SetParamValue(TGAP_CONN_HIGH_SCAN_INT, DEFAULT_SCAN_INT);
-    GAP_SetParamValue(TGAP_CONN_HIGH_SCAN_WIND, DEFAULT_SCAN_WIND);
+    // 所有场景的扫描间隔和窗口相同
     GAP_SetParamValue(TGAP_GEN_DISC_SCAN_INT, DEFAULT_SCAN_INT);
     GAP_SetParamValue(TGAP_GEN_DISC_SCAN_WIND, DEFAULT_SCAN_WIND);
     GAP_SetParamValue(TGAP_LIM_DISC_SCAN_INT, DEFAULT_SCAN_INT);
     GAP_SetParamValue(TGAP_LIM_DISC_SCAN_WIND, DEFAULT_SCAN_WIND);
-    GAP_SetParamValue(TGAP_CONN_EST_SCAN_INT, DEFAULT_SCAN_INT);
-    GAP_SetParamValue(TGAP_CONN_EST_SCAN_WIND, DEFAULT_SCAN_WIND);
 
-    // Set connection parameters
-    GAP_SetParamValue(TGAP_CONN_EST_INT_MIN, DEFAULT_CONN_INT);
-    GAP_SetParamValue(TGAP_CONN_EST_INT_MAX, DEFAULT_CONN_INT);
-    GAP_SetParamValue(TGAP_CONN_EST_SUPERV_TIMEOUT, DEFAULT_CONN_TIMEOUT);
-    GAP_SetParamValue(TGAP_CONN_EST_LATENCY, DEFAULT_CONN_LATENCY);
-
-    // Register to receive GAP and HCI messages
+    //注册接收GAP和HCI消息
     GAP_RegisterForMsgs(selfEntity);
   }
 
@@ -625,12 +594,13 @@ static void multi_role_init(void)
 
     // In case that the Unlimited Scanning feature is disabled
     // send the number of scan results to the GAP
+    //如果“无限扫描”功能被禁用，则将扫描结果的数量发送给GAP
     if(ENABLE_UNLIMITED_SCAN_RES == FALSE)
     {
         scanRes = DEFAULT_MAX_SCAN_RES;
     }
 
-    // Set the max amount of scan responses
+    // 设置扫描响应的最大数量
     GAPRole_SetParameter(GAPROLE_MAX_SCAN_RES, sizeof(uint8_t),
                          &scanRes, NULL);
 
@@ -704,33 +674,6 @@ static void multi_role_init(void)
 
     // Register to receive incoming ATT Indications/Notifications
     GATT_RegisterForInd(selfEntity);
-  }
-
-  // Setup the GAP Bond Manager
-  {
-    uint8_t pairMode = GAPBOND_PAIRING_MODE_INITIATE;
-    uint8_t mitm = TRUE;
-    uint8_t ioCap = GAPBOND_IO_CAP_DISPLAY_ONLY;
-    uint8_t bonding = TRUE;
-    uint8_t replaceBonds = FALSE;
-
-    // Set pairing mode
-    GAPBondMgr_SetParameter(GAPBOND_PAIRING_MODE, sizeof(uint8_t), &pairMode);
-
-    // Set authentication requirements
-    GAPBondMgr_SetParameter(GAPBOND_MITM_PROTECTION, sizeof(uint8_t), &mitm);
-
-    // Set I/O capabilities
-    GAPBondMgr_SetParameter(GAPBOND_IO_CAPABILITIES, sizeof(uint8_t), &ioCap);
-
-    // Set bonding requirements
-    GAPBondMgr_SetParameter(GAPBOND_BONDING_ENABLED, sizeof(uint8_t), &bonding);
-
-	// Set bond list LRU
-	GAPBondMgr_SetParameter(GAPBOND_LRU_BOND_REPLACEMENT, sizeof(uint8_t), &replaceBonds);
-
-    // Register and start Bond Manager
-    VOID GAPBondMgr_Register(&multi_role_BondMgrCBs);
   }
 
 #if !defined (USE_LL_CONN_PARAM_UPDATE)
@@ -819,6 +762,13 @@ static void multi_role_taskFxn(UArg a0, UArg a1)
         // Perform periodic application task
         multi_role_performPeriodicTask();
       }
+
+      if (events & MR_PERIODIC_EVT1)
+      {
+          Util_startClock(&periodicClock1);
+          
+          multi_role_performPeriodicTask1();
+      }
     }
   }
 }
@@ -826,7 +776,7 @@ static void multi_role_taskFxn(UArg a0, UArg a1)
 /*********************************************************************
 * @fn      multi_role_processStackMsg
 *
-* @brief   Process an incoming stack message.
+* @brief   处理传入的堆栈消息
 *
 * @param   pMsg - message to process
 *
@@ -944,58 +894,14 @@ static uint8_t multi_role_processGATTMsg(gattMsgEvent_t *pMsg)
       return (FALSE);
     }
   }
-  else if (pMsg->method == ATT_FLOW_CTRL_VIOLATED_EVENT)
-  {
-    // ATT request-response or indication-confirmation flow control is
-    // violated. All subsequent ATT requests or indications will be dropped.
-    // The app is informed in case it wants to drop the connection.
-
-    // Display the opcode of the message that caused the violation.
-    Display_print1(dispHandle, MR_ROW_STATUS1, 0, "FC Violated: %d", pMsg->msg.flowCtrlEvt.opcode);
-  }
-  else if (pMsg->method == ATT_MTU_UPDATED_EVENT)
-  {
-    // MTU size updated
-    Display_print1(dispHandle, MR_ROW_STATUS1, 0, "MTU Size: %d", pMsg->msg.mtuEvt.MTU);
-  }
 
   // Messages from GATT server
   if (linkDB_NumActive() > 0)
   {
     // Find index from connection handle
     connIndex = multi_role_mapConnHandleToIndex(pMsg->connHandle);
-    if ((pMsg->method == ATT_READ_RSP)   ||
-        ((pMsg->method == ATT_ERROR_RSP) &&
-         (pMsg->msg.errorRsp.reqOpcode == ATT_READ_REQ)))
-    {
-      if (pMsg->method == ATT_ERROR_RSP)
-      {
-        Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Read Error %d", pMsg->msg.errorRsp.errCode);
-      }
-      else
-      {
-        // After a successful read, display the read value
-        Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Read rsp: %d", pMsg->msg.readRsp.pValue[0]);
-      }
 
-    }
-    else if ((pMsg->method == ATT_WRITE_RSP)  ||
-             ((pMsg->method == ATT_ERROR_RSP) &&
-              (pMsg->msg.errorRsp.reqOpcode == ATT_WRITE_REQ)))
-    {
-
-      if (pMsg->method == ATT_ERROR_RSP == ATT_ERROR_RSP)
-      {
-        Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Write Error %d", pMsg->msg.errorRsp.errCode);
-      }
-      else
-      {
-        // After a succesful write, display the value that was written and
-        // increment value
-        Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Write sent: %d", charVal++);
-      }
-    }
-    else if (discInfo[connIndex].discState != BLE_DISC_STATE_IDLE)
+     if (discInfo[connIndex].discState != BLE_DISC_STATE_IDLE)
     {
       multi_role_processGATTDiscEvent(pMsg);
     }
@@ -1041,7 +947,6 @@ static void multi_role_sendAttRsp(void)
     else
     {
       // Continue retrying
-      Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Rsp send retry:", rspTxRetry);
     }
   }
 }
@@ -1063,14 +968,12 @@ static void multi_role_freeAttRsp(uint8_t status)
     // See if the response was sent out successfully
     if (status == SUCCESS)
     {
-      Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Rsp sent, retry: %d", rspTxRetry);
     }
     else
     {
       // Free response payload
       GATT_bm_free(&pAttRsp->msg, pAttRsp->method);
 
-      Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Rsp retry failed: %d", rspTxRetry);
     }
 
     // Free response message
@@ -1085,7 +988,7 @@ static void multi_role_freeAttRsp(uint8_t status)
 /*********************************************************************
 * @fn      multi_role_processAppMsg
 *
-* @brief   Process an incoming callback from a profile.
+* @brief    处理队列传入的回调
 *
 * @param   pMsg - message to process
 *
@@ -1097,18 +1000,12 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
   {
   case MR_STATE_CHANGE_EVT:
     multi_role_processStackMsg((ICall_Hdr *)pMsg->pData);
-    // Free the stack message
+    // 释放堆栈消息
     ICall_freeMsg(pMsg->pData);
     break;
 
   case MR_CHAR_CHANGE_EVT:
     multi_role_processCharValueChangeEvt(*(pMsg->pData));
-    // Free the app data
-    ICall_free(pMsg->pData);
-    break;
-
-  case MR_KEY_CHANGE_EVT:
-    multi_role_handleKeys(*(pMsg->pData));
     // Free the app data
     ICall_free(pMsg->pData);
     break;
@@ -1173,9 +1070,7 @@ static uint8_t multi_role_eventCB(gapMultiRoleEvent_t *pEvent)
 /*********************************************************************
 * @fn      multi_role_paramUpdateDecisionCB
 *
-* @brief   Callback for application to decide whether or not to accept
-*          a parameter update request and, if accepted, what parameters
-*          to use
+* @brief   回调来决定是否接受参数更新请求，如果接受，则使用什么参数
 *
 * @param   pReq - pointer to param update request
 * @param   pRsp - pointer to param update response
@@ -1223,38 +1118,13 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
       // Store max pdu size
       maxPduSize = pEvent->initDone.dataPktLen;
 
-      Display_print0(dispHandle, MR_ROW_DEV_ADDR, 0, Util_convertBdAddr2Str(pEvent->initDone.devAddr));
-      Display_print0(dispHandle, MR_ROW_CONN_STATUS, 0, "Connected to 0");
-      Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Initialized");
-
       // Set device info characteristic
       DevInfo_SetParameter(DEVINFO_SYSTEM_ID, DEVINFO_SYSTEM_ID_LEN, pEvent->initDone.devAddr);
+      //mr_doScan(1); 
     }
     break;
 
-    // Advertising started
-    case GAP_MAKE_DISCOVERABLE_DONE_EVENT:
-    {
-      Display_print0(dispHandle, MR_ROW_ADV, 0, "Advertising");
-    }
-    break;
-
-    // Advertising ended
-    case GAP_END_DISCOVERABLE_DONE_EVENT:
-    {
-      // Display advertising info depending on whether there are any connections
-      if (linkDB_NumActive() < maxNumBleConns)
-      {
-        Display_print0(dispHandle, MR_ROW_ADV, 0, "Ready to Advertise");
-      }
-      else
-      {
-        Display_print0(dispHandle, MR_ROW_ADV, 0, "Can't Adv : Max conns reached");
-      }
-    }
-    break;
-
-    // A discovered device report
+    //已发现设备报告
     case GAP_DEVICE_INFO_EVENT:
     {
       if(ENABLE_UNLIMITED_SCAN_RES == TRUE)
@@ -1266,6 +1136,7 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
     break;
 
     // End of discovery report
+    //发现报告结束
     case GAP_DEVICE_DISCOVERY_EVENT:
     {
         if(pEvent->gap.hdr.status == SUCCESS)
@@ -1298,14 +1169,6 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
               }
           }
 
-                // Update menu
-                tbm_setItemStatus(&mrMenuMain, TBM_ITEM_1, TBM_ITEM_NONE);
-
-                // Disable any non-active scan results
-                for (; i < (DEFAULT_MAX_SCAN_RES - 1); i++)
-                {
-                  tbm_setItemStatus(&mrMenuConnect, TBM_ITEM_NONE, (1 << i));
-                }
 
                 for(i = 0; i < scanRes; i++)
                 {
@@ -1315,41 +1178,19 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
                   // Copy converted string to static device list
                   memcpy(devList[i].strAddr, pAddr, B_STR_ADDR_LEN);
 
-                  // Set the action description in the connect submenu
-                  TBM_SET_ACTION_DESC(&mrMenuConnect, i, devList[i].strAddr);
-                  tbm_setItemStatus(&mrMenuConnect, (1 << i) , TBM_ITEM_NONE);
                 }
 
-
-              Display_print1(dispHandle, MR_ROW_STATUS1, 0, "Devices Found %d", scanRes);
-
         }
-        else
-        {
-            if(pEvent->gap.hdr.status == GAP_LLERROR_INVALID_PARAMETERS)
-            {
-                Display_print0(dispHandle, 3, 0, "INVALID PARAMETERS");
-            }
-            else if(pEvent->gap.hdr.status == GAP_LLERROR_COMMAND_DISALLOWED)
-            {
-                Display_print0(dispHandle, 3, 0, "COMMAND DISALLOWED");
-            }
-            else
-            {
-                Display_print0(dispHandle, 3, 0, "ERROR");
-            }
-        }
+        //mr_doScan(1);
     }
     break;
 
-    // Connection has been established
+    /*----------------------- 建立链接完成事件 -----------------------*/
     case GAP_LINK_ESTABLISHED_EVENT:
     {
       // If succesfully established
       if (pEvent->gap.hdr.status == SUCCESS)
       {
-        Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Connected!");
-        Display_print1(dispHandle, MR_ROW_CONN_STATUS, 0, "Connected to %d", linkDB_NumActive());
 
         // Clear connecting flag
         connecting = FALSE;
@@ -1362,14 +1203,7 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
         {
           uint8_t advertEnabled = FALSE;
           GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &advertEnabled, NULL);
-          Display_print0(dispHandle, MR_ROW_ADV, 0, "Can't adv: no links");
         }
-
-        // Print last connected device
-        Display_print0(dispHandle, MR_ROW_STATUS2, 0, (char*)connHandleMap[index].strAddr);
-
-        // Return to main menu
-        tbm_goTo(&mrMenuMain);
 
         // Start service discovery
         multi_role_startDiscovery(pEvent->linkCmpl.connectionHandle);
@@ -1379,12 +1213,6 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
         {
           Util_startClock(&periodicClock);
         }
-      }
-      // If the connection was not successfully established
-      else
-      {
-        Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Connect Failed");
-        Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Reason: %d", pEvent->gap.hdr.status);
       }
     }
     break;
@@ -1408,43 +1236,16 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
         discInfo[connIndex].discState = BLE_DISC_STATE_IDLE;
         discInfo[connIndex].charHdl = 0;
 
-        // Disable connection item from connectable menus
-        tbm_setItemStatus(&mrMenuGattRw, TBM_ITEM_NONE, (1 << connIndex));
-        tbm_setItemStatus(&mrMenuConnUpdate, TBM_ITEM_NONE, (1 << connIndex));
-        tbm_setItemStatus(&mrMenuDisconnect, TBM_ITEM_NONE, (1 << connIndex));
 
         // If there aren't any active connections
         if (currentNumActive == 0)
         {
-          // Disable connectable menus
-          tbm_setItemStatus(&mrMenuMain, TBM_ITEM_NONE,
-                            TBM_ITEM_2 | TBM_ITEM_3 | TBM_ITEM_4);
-
           // Stop periodic clock
           Util_stopClock(&periodicClock);
-        }
-
-        // Clear screen
-        Display_print1(dispHandle, MR_ROW_CONN_STATUS, 0, "Connected to %d", linkDB_NumActive());
-        Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Disconnected!");
-
-        // If it is possible to advertise again
-        if (currentNumActive == (maxNumBleConns-1))
-        {
-          Display_print0(dispHandle, MR_ROW_ADV, 0, "Ready to Advertise");
-          Display_print0(dispHandle, MR_ROW_STATUS2, 0, "Ready to Scan");
         }
       }
     }
     break;
-
-    // A parameter update has occurred
-    case GAP_LINK_PARAM_UPDATE_EVENT:
-    {
-      Display_print1(dispHandle, MR_ROW_STATUS1, 0, "Param Update %d", pEvent->linkUpdate.status);
-    }
-    break;
-
 
   default:
     break;
@@ -1478,8 +1279,7 @@ static void multi_role_charValueChangeCB(uint8_t paramID)
 /*********************************************************************
 * @fn      multi_role_processCharValueChangeEvt
 *
-* @brief   Process a pending Simple Profile characteristic value change
-*          event.
+* @brief   处理一个挂起的简单概要特征值更改事件
 *
 * @param   paramID - parameter ID of the value that was changed.
 *
@@ -1495,15 +1295,11 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramID)
   case SIMPLEPROFILE_CHAR1:
     // Get new value
     SimpleProfile_GetParameter(SIMPLEPROFILE_CHAR1, &newValue);
-
-    Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Char 1: %d", (uint16_t)newValue);
     break;
 
   case SIMPLEPROFILE_CHAR3:
     // Get new value
     SimpleProfile_GetParameter(SIMPLEPROFILE_CHAR3, &newValue);
-
-    Display_print1(dispHandle, MR_ROW_STATUS2, 0, "Char 3: %d", (uint16_t)newValue);
     break;
 
   default:
@@ -1515,7 +1311,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramID)
 /*********************************************************************
 * @fn      multi_role_enqueueMsg
 *
-* @brief   Creates a message and puts the message in RTOS queue.
+* @brief   创建消息并将消息放入RTOS队列中。
 *
 * @param   event - message event.
 * @param   pData - pointer to data to be queued
@@ -1542,64 +1338,9 @@ static uint8_t multi_role_enqueueMsg(uint16_t event, uint8_t *pData)
 }
 
 /*********************************************************************
-* @fn      multi_role_keyChangeHandler
-*
-* @brief   Key event handler function
-*
-* @param   a0 - ignored
-*
-* @return  none
-*/
-void multi_role_keyChangeHandler(uint8_t keys)
-{
-  uint8_t *pData;
-
-  // Allocate space for the event data.
-  if ((pData = ICall_malloc(sizeof(uint8_t))))
-  {
-    // Store the key data
-    *pData = keys;
-
-    // Queue the event.
-    multi_role_enqueueMsg(MR_KEY_CHANGE_EVT, pData);
-  }
-}
-
-/*********************************************************************
-* @fn      multi_role_handleKeys
-*
-* @brief   Handles all key events for this device.
-*
-* @param   keys - bit field for key events. Valid entries:
-*                 HAL_KEY_SW_2
-*                 HAL_KEY_SW_1
-*
-* @return  none
-*/
-static void multi_role_handleKeys(uint8_t keys)
-{
-  if (keys & KEY_LEFT)
-  {
-    // Check if the key is still pressed
-    if (PIN_getInputValue(Board_BUTTON0) == 0)
-    {
-      tbm_buttonLeft();
-    }
-  }
-  else if (keys & KEY_RIGHT)
-  {
-    // Check if the key is still pressed
-    if (PIN_getInputValue(Board_BUTTON1) == 0)
-    {
-      tbm_buttonRight();
-    }
-  }
-}
-
-/*********************************************************************
 * @fn      multi_role_startDiscovery
 *
-* @brief   Start service discovery.
+* @brief   开始发现服务.
 *
 * @param   connHandle - connection handle
 *
@@ -1651,7 +1392,6 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
     if (pMsg->method == ATT_MTU_UPDATED_EVENT)
     {
       // MTU size updated
-      Display_print1(dispHandle, MR_ROW_STATUS1, 0, "MTU Size: %d", pMsg->msg.mtuEvt.MTU);
     }
     // If we've updated the MTU size
     else if (discInfo[connIndex].discState == BLE_DISC_STATE_MTU)
@@ -1714,8 +1454,6 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
         // Store handle
         discInfo[connIndex].charHdl = BUILD_UINT16(pMsg->msg.readByTypeRsp.pDataList[3],
                                                    pMsg->msg.readByTypeRsp.pDataList[4]);
-
-        Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Simple Svc Found");
       }
     }
   }
@@ -1813,7 +1551,7 @@ static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
 /*********************************************************************
 * @fn      multi_role_processPairState
 *
-* @brief   Process the new paring state.
+* @brief   处理新的配对状态。
 *
 * @param   pairingEvent - pairing event received from the stack
 *
@@ -1826,18 +1564,15 @@ static void multi_role_processPairState(gapPairStateEvent_t* pairingEvent)
   // If we've started pairing
   if (pairingEvent->state == GAPBOND_PAIRING_STATE_STARTED)
   {
-    Display_print1(dispHandle, MR_ROW_SECURITY, 0,"connHandle %d pairing", pairingEvent->connectionHandle);
   }
   // If pairing is finished
   else if (pairingEvent->state == GAPBOND_PAIRING_STATE_COMPLETE)
   {
     if (pairingEvent->status == SUCCESS)
     {
-      Display_print1(dispHandle, MR_ROW_SECURITY, 0,"connHandle %d paired", pairingEvent->connectionHandle);
     }
     else
     {
-      Display_print2(dispHandle, MR_ROW_SECURITY, 0, "pairing failed: %d", pairingEvent->connectionHandle, pairingEvent->status);
       enableAdv = TRUE;
     }
   }
@@ -1846,7 +1581,6 @@ static void multi_role_processPairState(gapPairStateEvent_t* pairingEvent)
   {
     if (pairingEvent->status == SUCCESS)
     {
-      Display_print1(dispHandle, MR_ROW_SECURITY, 0, "Cxn %d bonding success", pairingEvent->connectionHandle);
     }
     enableAdv = TRUE;
   }
@@ -1855,11 +1589,9 @@ static void multi_role_processPairState(gapPairStateEvent_t* pairingEvent)
   {
     if (pairingEvent->status == SUCCESS)
     {
-      Display_print1(dispHandle, MR_ROW_SECURITY, 0, "Cxn %d bond save success", pairingEvent->connectionHandle);
     }
     else
     {
-      Display_print2(dispHandle, MR_ROW_SECURITY, 0, "Cxn %d bond save failed: %d", pairingEvent->connectionHandle, pairingEvent->status);
     }
     enableAdv = TRUE;
   }
@@ -1874,7 +1606,7 @@ static void multi_role_processPairState(gapPairStateEvent_t* pairingEvent)
 /*********************************************************************
 * @fn      multi_role_processPasscode
 *
-* @brief   Process the Passcode request.
+* @brief   处理Passcode请求。
 *
 * @return  none
 */
@@ -1882,7 +1614,6 @@ static void multi_role_processPasscode(gapPasskeyNeededEvent_t *pData)
 {
   // Use static passcode
   uint32_t passcode = 123456;
-  Display_print1(dispHandle, MR_ROW_SECURITY, 0, "Passcode: %d", passcode);
   // Send passcode to GAPBondMgr
   GAPBondMgr_PasscodeRsp(pData->connectionHandle, SUCCESS, passcode);
 }
@@ -1944,6 +1675,11 @@ static void multi_role_performPeriodicTask(void)
   }
 }
 
+static void multi_role_performPeriodicTask1(void)
+{
+    mr_doScan(1);
+}
+
 /*********************************************************************
 * @fn      multi_role_addMappingEntry
 *
@@ -1973,23 +1709,6 @@ static uint8_t multi_role_addMappingEntry(uint16_t connHandle, uint8_t *addr)
       // Copy converted string to persistent connection handle list
       memcpy(connHandleMap[index].strAddr, pAddr, B_STR_ADDR_LEN);
 
-      // Enable items in submenus
-      tbm_setItemStatus(&mrMenuGattRw, (1 << index), TBM_ITEM_NONE);
-      tbm_setItemStatus(&mrMenuConnUpdate, (1 << index), TBM_ITEM_NONE);
-      tbm_setItemStatus(&mrMenuDisconnect, (1 << index), TBM_ITEM_NONE);
-
-      // Add device address as a string to action description of connectable menus
-      TBM_SET_ACTION_DESC(&mrMenuGattRw, index, connHandleMap[index].strAddr);
-      TBM_SET_ACTION_DESC(&mrMenuConnUpdate, index, connHandleMap[index].strAddr);
-      TBM_SET_ACTION_DESC(&mrMenuDisconnect, index, connHandleMap[index].strAddr);
-
-      // Enable connectable menus if they are disabled
-      if (!(TBM_IS_ITEM_ACTIVE(&mrMenuMain, TBM_ITEM_2)))
-      {
-        tbm_setItemStatus(&mrMenuMain, TBM_ITEM_2 | TBM_ITEM_3 | TBM_ITEM_4,
-                          TBM_ITEM_NONE);
-      }
-
       return index;
     }
   }
@@ -2000,7 +1719,8 @@ static uint8_t multi_role_addMappingEntry(uint16_t connHandle, uint8_t *addr)
 /*********************************************************************
  * @fn      multi_role_addDeviceInfo
  *
- * @brief   Add a device to the device discovery result list
+ * @brief   添加设备到设备发现结果列表中
+ *          
  *
  * @return  none
  */
@@ -2033,7 +1753,7 @@ static void multi_role_addDeviceInfo(uint8 *pAddr, uint8 addrType)
 /*********************************************************************
 * @fn      mr_doScan
 *
-* @brief   Respond to user input to start scanning
+* @brief   响应用户输入开始扫描
 *
 * @param   index - not used
 *
@@ -2044,8 +1764,8 @@ bool mr_doScan(uint8_t index)
   (void) index;
 
   // If we can connect to another device
-  if (linkDB_NumActive() < maxNumBleConns)
-  {
+//   if (linkDB_NumActive() < maxNumBleConns)
+//   {
     // If we're not already scanning
     if (!scanningStarted)
     {
@@ -2054,57 +1774,19 @@ bool mr_doScan(uint8_t index)
 
       // Start scanning
       GAPRole_StartDiscovery(DEFAULT_DISCOVERY_MODE,
-                             DEFAULT_DISCOVERY_ACTIVE_SCAN, DEFAULT_DISCOVERY_WHITE_LIST);
-
-      Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Discovering...");
+                             DEFAULT_DISCOVERY_ACTIVE_SCAN,
+                             DEFAULT_DISCOVERY_WHITE_LIST);
     }
     // We're already scanning...so do nothing    
-  }
+ // }
   return TRUE;
 }
 
-/*********************************************************************
-* @fn      mr_doConnect
-*
-* @brief   Respond to user input to form a connection
-*
-* @param   index - index as selected from the mrMenuConnect
-*
-* @return  TRUE since there is no callback to use this value
-*/
-bool mr_doConnect(uint8_t index)
-{
-  // If already connecting...cancel
-  if (connecting == TRUE)
-  {
-    // Cancel connection request
-    GAPRole_TerminateConnection(GAP_CONNHANDLE_INIT);
-    Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Connecting Cancelled");
-
-    // Clear connecting flag
-    connecting = FALSE;
-  }
-  // If attempting to connect
-  else
-  {
-    // Connect to current device in scan result
-    GAPRole_EstablishLink(DEFAULT_LINK_HIGH_DUTY_CYCLE,
-                          DEFAULT_LINK_WHITE_LIST,
-                          devList[index].addrType, devList[index].addr);
-
-    // Set connecting state flag
-    connecting = TRUE;
-    Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Connecting to:");
-    Display_print0(dispHandle, MR_ROW_STATUS2, 0, (char*)devList[index].strAddr);
-  }
-
-  return TRUE;
-}
 
 /*********************************************************************
 * @fn      mr_doGattRw
 *
-* @brief   Respond to user input to do a GATT read or write
+* @brief   响应用户输入进行GATT读或写
 *
 * @param   index - index as selected from the mrMenuGattRw
 *
@@ -2173,7 +1855,7 @@ bool mr_doGattRw(uint8_t index)
 /*********************************************************************
 * @fn      mr_doConnUpdate
 *
-* @brief   Respond to user input to do a connection update
+* @brief   响应用户输入进行连接更新
 *
 * @param   index - index as selected from the mrMenuConnUpdate
 *
@@ -2191,12 +1873,10 @@ bool mr_doConnUpdate(uint8_t index)
   // If successfully sent to controller
   if (status == SUCCESS)
   {
-    Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Updating");
   }
   // If there is already an ongoing update
   else if (status == blePending)
   {
-    Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Already Updating");
   }
 
   return TRUE;
@@ -2205,7 +1885,7 @@ bool mr_doConnUpdate(uint8_t index)
 /*********************************************************************
 * @fn      mr_doDisconnect
 *
-* @brief   Respond to user input to terminate a connection
+* @brief   响应用户输入以终止连接
 *
 * @param   index - index as selected from the mrMenuConnUpdate
 *
@@ -2215,7 +1895,6 @@ bool mr_doDisconnect(uint8_t index)
 {
   // Disconnect
   GAPRole_TerminateConnection(connHandleMap[index].connHandle);
-  Display_print0(dispHandle, MR_ROW_STATUS1, 0, "Disconnecting");
 
   return TRUE;
 }
