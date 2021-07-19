@@ -66,10 +66,13 @@ Target Device: cc2640r2
 /* This Header file contains all BLE API and icall structure definition */
 #include "icall_ble_api.h"
 
+
 #include "devinfoservice.h"
 #include "simple_gatt_profile.h"
 #include "multi.h"
-#include"ibeaconcfg.h"
+#include "ibeaconcfg.h"
+#include "snv.h"
+#include "hal_uart.h"
 
 #include "board_key.h"
 #include "board.h"
@@ -267,6 +270,7 @@ static Clock_Struct periodicClock1;
 static Queue_Struct appMsg;
 static Queue_Handle appMsgQueue;
 
+static uint16_t advInt = DEFAULT_ADVERTISING_INTERVAL;
 // Task configuration
 Task_Struct mrTask;
 Char mrTaskStack[MR_TASK_STACK_SIZE];
@@ -355,8 +359,16 @@ gapRole_updateConnParams_t updateParams =
 };
 
 // Connection index for mapping connection handles
+
+extern uint8_t configLimit_Flg;
+extern uint8_t writerAttr_Flg;
+
 static uint16_t connIndex = INVALID_CONNHANDLE;
 
+const uint8_t D_FRT[10] ={'2','0','2','1','-','0','1','-','2','2'};                 //固件发布日期 必须与设备信息一致
+const uint8_t D_FR[14]={'F','M','V','E','R','S','I','O','N','_','0','0','0','1'};   //固件版本      必须与设备信息一致
+const uint8_t D_CKey[16]={0xDE,0x48,0x2B,0x1C,0x22,0x1C,0x6C,0x30,0x3C,0xF0,0x50,0xEB,0x00,0x20,0xB0,0xBD}; //与生产软件配合使用
+uint8_t hw[15] ={'H','W','V','E','R','S','I','O','N','_','0','0','0','1','\0'};
 // Maximum number of connected devices
 static uint8_t maxNumBleConns = MAX_NUM_BLE_CONNS;
 
@@ -392,6 +404,8 @@ static void multi_role_performPeriodicTask1(void);
 static void multi_role_clockHandler(UArg arg);
 static void multi_role_connEvtCB(Gap_ConnEventRpt_t *pReport);
 static void multi_role_addDeviceInfo(uint8 *pAddr, uint8 addrType);
+
+static void SimpleBLEPeripheral_BleParameterGet(void);
 
 /*********************************************************************
  * EXTERN FUNCTIONS
@@ -541,11 +555,81 @@ static void multi_role_init(void)
   // Open Display.
   dispHandle = Display_open(MR_DISPLAY_TYPE, NULL);
 
+  Nvram_Init();
+  SimpleBLEPeripheral_BleParameterGet();
 
+  if(ibeaconInf_Config.initFlag != 0xFF)
+  {
+      memcpy(&scanRspData[19], &ibeaconInf_Config.majorValue[0], sizeof(uint32_t));
+      memcpy(&scanRspData[17], &ibeaconInf_Config.uuidValue[14], sizeof(uint16_t));
+      memcpy(&advertData[9], &ibeaconInf_Config.uuidValue, DEFAULT_UUID_LEN);
+      memcpy(&advertData[9 + DEFAULT_UUID_LEN], &ibeaconInf_Config.majorValue, sizeof(uint32_t));
+  }
+
+  uint8_t txpower = HCI_EXT_TX_POWER_0_DBM;
+
+  if(ibeaconInf_Config.initFlag != 0xFF)
+  {
+    switch(ibeaconInf_Config.txInterval)
+    {
+      case 21:advInt = 1600;
+          break;
+      case 1: advInt = 1400;                            //875ms
+          break;
+      case 2: advInt = DEFAULT_ADVERTISING_INTERVAL*5;  //500ms
+          break;
+      case 3: advInt = DEFAULT_ADVERTISING_INTERVAL*3;  //300ms
+          break;
+      case 4: advInt = 400;                             //250ms
+          break;
+      case 5: advInt = DEFAULT_ADVERTISING_INTERVAL*2;  //200ms
+          break;
+      case 10: advInt = DEFAULT_ADVERTISING_INTERVAL;   //100
+          break;
+      case 20: advInt = DEFAULT_ADVERTISING_INTERVAL/2; //50ms
+          break;
+      case 30: advInt = 48;                             //30ms test
+          break;
+      case 50: advInt = 32;                             //20ms test
+          break;
+      default: advInt = DEFAULT_ADVERTISING_INTERVAL * 3;
+          break;
+    }
+
+    switch(ibeaconInf_Config.txPower)
+    {
+      case 0: txpower = HCI_EXT_TX_POWER_MINUS_21_DBM;  //-21dbm
+          break;
+      case 1: txpower = HCI_EXT_TX_POWER_MINUS_18_DBM;  //-18dbm
+          break;
+      case 2: txpower = HCI_EXT_TX_POWER_MINUS_12_DBM;  //-12dbm
+          break;
+      case 3: txpower = HCI_EXT_TX_POWER_MINUS_9_DBM;   //-9dbm
+          break;
+      case 4: txpower = HCI_EXT_TX_POWER_MINUS_6_DBM;   //-6dbm
+          break;
+      case 5: txpower = HCI_EXT_TX_POWER_MINUS_3_DBM;   //-3dbm
+          break;
+      case 6: txpower = HCI_EXT_TX_POWER_0_DBM;         //0dbm
+          break;
+      case 7: txpower = HCI_EXT_TX_POWER_2_DBM;         //2dbm
+          break;
+      default: txpower = HCI_EXT_TX_POWER_0_DBM;
+          break;
+    }
+  }
+
+  HCI_EXT_SetTxPowerCmd(txpower);
+
+  {
+    memcpy(&hw[10], &ibeaconInf_Config.hwvr[0], sizeof(uint32_t));
+    DevInfo_SetParameter(DEVINFO_HARDWARE_REV, sizeof(hw), hw);
+    ibeaconInf_Config.mDate[10] = '\0';
+    DevInfo_SetParameter(DEVINFO_MANUFACTUREDATE, 11, &ibeaconInf_Config.mDate[0]);
+  }
   // Setup the GAP
   {
     // 将所有场景的发布间隔设置为相同
-    uint16_t advInt = DEFAULT_ADVERTISING_INTERVAL;
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MIN, advInt);
     GAP_SetParamValue(TGAP_LIM_DISC_ADV_INT_MAX, advInt);
     GAP_SetParamValue(TGAP_GEN_DISC_ADV_INT_MIN, advInt);
@@ -563,6 +647,8 @@ static void multi_role_init(void)
     //注册接收GAP和HCI消息
     GAP_RegisterForMsgs(selfEntity);
   }
+
+
 
   // Setup the GAP Role Profile
   {
@@ -1027,10 +1113,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
           break;
       }
 
-  default:
-    // Do nothing.
-    break;
-  }
+      default:
+          // Do nothing.
+          break;
+      }
 }
 
 /*********************************************************************
@@ -1230,6 +1316,13 @@ static void multi_role_processRoleEvent(gapMultiRoleEvent_t *pEvent)
         {
           // Stop periodic clock
           Util_stopClock(&periodicClock);
+        }
+
+        configLimit_Flg = FALSE;
+        if (writerAttr_Flg == TRUE)
+        {
+            Ble_WriteNv_Inf(BLE_NVID_CUST_START, &ibeaconInf_Config.txPower);
+            HCI_EXT_ResetSystemCmd(HCI_EXT_RESET_SYSTEM_HARD);
         }
       }
     }
@@ -1843,6 +1936,36 @@ bool mr_doAdvertise(uint8_t index)
 
   return TRUE;
 }
+
+/*********************************************************************
+ * @fn      SimpleBLEPeripheral_BleParameterGet
+ *
+ * @brief    Get Ble Parameter.
+ *
+ * @param   none
+ *
+ * @return  none
+ */
+static void SimpleBLEPeripheral_BleParameterGet(void)
+{
+    uint32_t crc;
+
+    snvinf_t *ptr = (snvinf_t *)rxbuff; //reuse
+
+    if( Ble_ReadNv_Inf( BLE_NVID_DEVINF_START, (uint8_t *)ptr) == 0 )
+    {
+        crc = crc32(0, &ptr->ibeaconinf_config.txPower, sizeof(ibeaconinf_config_t));
+        if( crc == ptr->crc32)
+          memcpy(&ibeaconInf_Config.txPower, &ptr->ibeaconinf_config.txPower, sizeof(ibeaconinf_config_t));
+        else
+          ibeaconInf_Config.initFlag = 0xFF;
+    }
+    else
+        ibeaconInf_Config.initFlag = 0xFF;
+
+    memset( (void *)rxbuff, 0, sizeof(rxbuff));
+}
+
 
 /*********************************************************************
 *********************************************************************/
