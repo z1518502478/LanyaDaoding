@@ -66,6 +66,10 @@ Target Device: cc2640r2
 /* This Header file contains all BLE API and icall structure definition */
 #include "icall_ble_api.h"
 
+#ifdef IWDG_ENABLE
+#include <ti/drivers/Watchdog.h>
+#include <inc/hw_wdt.h>
+#endif
 
 #include "devinfoservice.h"
 #include "simple_gatt_profile.h"
@@ -151,6 +155,7 @@ Target Device: cc2640r2
 #define MR_PASSCODE_NEEDED_EVT               Event_Id_05
 #define MR_PERIODIC_EVT                      Event_Id_06
 #define MR_PERIODIC_EVT1                     Event_Id_07
+#define MR_PERIODIC_EVT2                     Event_Id_08
 
 #define MR_ALL_EVENTS                        (MR_ICALL_EVT           | \
                                              MR_QUEUE_EVT            | \
@@ -161,6 +166,7 @@ Target Device: cc2640r2
                                              MR_PAIRING_STATE_EVT    | \
                                              MR_PERIODIC_EVT         | \
                                              MR_PERIODIC_EVT1        | \
+                                             MR_PERIODIC_EVT2        | \
                                              MR_PASSCODE_NEEDED_EVT)
 
 // Discovery states
@@ -186,6 +192,8 @@ typedef enum {
 // How often to perform periodic event (in msec)
 #define MR_PERIODIC_EVT_PERIOD               5000
 #define MR_PERIODIC_EVT_PERIOD1              3000
+// How often to restart system (in ms)
+#define SP_SYS_RESTART_EVT_PERIOD            1800000
 
 // Set the register cause to the registration bit-mask
 #define CONNECTION_EVENT_REGISTER_BIT_SET(RegisterCause) (connectionEventRegisterCauseBitMap |= RegisterCause )
@@ -265,6 +273,7 @@ static ICall_SyncHandle syncEvent;
 // Clock instances for internal periodic events.
 static Clock_Struct periodicClock;
 static Clock_Struct periodicClock1;
+static Clock_Struct sysRestart;
 
 // Queue object used for app messages
 static Queue_Struct appMsg;
@@ -415,6 +424,37 @@ extern void AssertHandler(uint8 assertCause, uint8 assertSubcause);
 /*********************************************************************
 * PROFILE CALLBACKS
 */
+/****************Watch Dog Functions*********************************/
+#ifdef IWDG_ENABLE
+
+//Watchdog_Params params;
+Watchdog_Handle watchdog;
+
+void wdtCallback(UArg handle)
+{
+    Watchdog_clear(watchdog);
+}
+
+void wdtInitFxn(void)
+{
+    uint32_t  reloadValue;
+
+    Watchdog_Params wp;
+
+    Watchdog_init();
+    Watchdog_Params_init(&wp);
+    wp.callbackFxn    = (Watchdog_Callback)wdtCallback;
+    wp.debugStallMode = Watchdog_DEBUG_STALL_ON;
+    wp.resetMode      = Watchdog_RESET_ON;
+
+    watchdog = Watchdog_open(CC2640R2_LAUNCHXL_WATCHDOG0, &wp);
+    reloadValue = Watchdog_convertMsToTicks(watchdog, 4000000);
+
+    if( reloadValue != 0)
+        Watchdog_setReload(watchdog, reloadValue); //  (WDT runs always at 48MHz/32)
+}
+#endif
+
 
 // GAP Role Callbacks
 static gapRolesCBs_t multi_role_gapRoleCBs =
@@ -552,11 +592,18 @@ static void multi_role_init(void)
 
   Util_constructClock(&periodicClock1, multi_role_clockHandler,
                       MR_PERIODIC_EVT_PERIOD1, 1, true, MR_PERIODIC_EVT1);
+
+  Util_constructClock(&sysRestart, multi_role_clockHandler,
+                      SP_SYS_RESTART_EVT_PERIOD, 0, false, MR_PERIODIC_EVT2);
   // Open Display.
   dispHandle = Display_open(MR_DISPLAY_TYPE, NULL);
 
   Nvram_Init();
   SimpleBLEPeripheral_BleParameterGet();
+
+#ifdef IWDG_ENABLE
+  wdtInitFxn();
+#endif
 
   if(ibeaconInf_Config.initFlag != 0xFF)
   {
@@ -768,6 +815,8 @@ static void multi_role_init(void)
   // loop
   HCI_LE_ReadLocalSupportedFeaturesCmd();
 #endif // !defined (USE_LL_CONN_PARAM_UPDATE)
+
+  Util_startClock(&sysRestart);
 
 }
 
